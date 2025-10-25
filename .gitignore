@@ -1,0 +1,4 @@
+*.csv
+sessionParams/*
+lrc.pyc
+.DS_Store

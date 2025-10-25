@@ -1,0 +1,14 @@
+FULLSCREEN?
+True
+Trials per Block
+20
+Blocks per Session
+100
+ITI (sec)
+5
+DURATION (sec)
+10
+RUNTIME (sec)
+20000
+TIMEOUT (sec)
+5
