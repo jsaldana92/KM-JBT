@@ -1,6 +1,7 @@
 # scenes/jbt_game.py
 import os
 import time
+import random
 import pygame
 from pygame.locals import *
 
@@ -23,11 +24,11 @@ except Exception:
 START_BASE   = (150, 75)   # legacy size at 800x600
 STIM_BASE    = (200, 150)  # legacy size at 800x600
 
-START_SCALE  = 0.70        # <— smaller start bar (1.0 = original). Try 0.6–0.8
-STIM_SCALE   = 0.75        # <— smaller stimulus (1.0 = original)
+START_SCALE  = 0.70        # smaller start bar (1.0 = original)
+STIM_SCALE   = 0.75        # smaller stimulus
 
-CURSOR_SPEED_PER_W = 0.005 # <— cursor speed factor (was 0.006). Lower = slower, higher = faster.
-JOYSTICK_DEADZONE  = 0.20  # <— horizontal axis deadzone
+CURSOR_SPEED_PER_W = 0.005 # cursor speed factor
+JOYSTICK_DEADZONE  = 0.20  # horizontal axis deadzone
 
 # ---------- sounds (cached) ----------
 _SOUNDS = None
@@ -37,9 +38,9 @@ def _load_sounds():
         return _SOUNDS
     pygame.mixer.init()
     base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
-    start_chime = pygame.mixer.Sound(os.path.join(base, "start_chime.wav"))  # not used now, kept available
-    correct_snd = pygame.mixer.Sound(os.path.join(base, "correct.wav"))
-    incorrect_snd = pygame.mixer.Sound(os.path.join(base, "incorrect.wav"))
+    start_chime    = pygame.mixer.Sound(os.path.join(base, "start_chime.wav"))  # not used in JBT
+    correct_snd    = pygame.mixer.Sound(os.path.join(base, "correct.wav"))
+    incorrect_snd  = pygame.mixer.Sound(os.path.join(base, "incorrect.wav"))
     _SOUNDS = {
         "start": start_chime,
         "correct": correct_snd,
@@ -63,7 +64,6 @@ PROFILES = {
         "NN":  (115,115,115),
         "S-":  (105,105,105),
     },
-    # add more named profiles here later if needed
 }
 
 # ---------- helpers ----------
@@ -95,18 +95,52 @@ def _move_horizontal(keys, joystick, left_key, right_key, speed):
 def _is_correct(label):  # Only S+ is “correct”
     return (label or "").upper() == "S+"
 
+# ---- per-SIDE, block-balanced stimulus decks (left/right halves) ----
+_BLOCK_TEMPLATE = ["S+","S+","S-","S-","NP","NN","INT"]
+
+def _init_jbt_side_decks(state):
+    """
+    Ensures state['progress']['jbt_decks_sides'] exists with keys 'left' and 'right',
+    each holding a list that functions as a per-side deck.
+    """
+    p = state.setdefault("progress", {})
+    decks = p.setdefault("jbt_decks_sides", {})
+    decks.setdefault("left", [])
+    decks.setdefault("right", [])
+    return decks
+
+def _refill_and_shuffle(deck):
+    deck[:] = list(_BLOCK_TEMPLATE)
+    random.shuffle(deck)
+
+def _next_label_for_side(state, side_key):
+    """
+    side_key: 'left' or 'right'
+    Returns next label from that side's 7-trial block (refilling when empty).
+    """
+    decks = _init_jbt_side_decks(state)
+    deck = decks[side_key]
+    if not deck:
+        _refill_and_shuffle(deck)
+    return deck.pop().upper()
+
 # =============== JBT Scene ===============
 def run(screen, clock, state, player, stimulus_label=None):
     """
     Run one NoGo-like JBT for `player` ('leader' | 'follower').
 
-    Visuals/flow (matching Sakumi_NoGo):
+    Stimulus selection (PER SIDE):
+      - If `stimulus_label` is provided, it is used (testing/override).
+      - Otherwise, the active side pulls from its own 7-trial block: 2 S+, 2 S-, 1 NP, 1 NN, 1 INT (random order).
+        Sides ('left' and 'right') are tracked independently across the session.
+
+    Visuals/flow:
       - Screen split like KM. Only the ACTIVE half has blue background; the other is white.
       - START bar: solid BLUE (0,0,255), thick BLACK border, square corners, 150x75@800x600 scaling.
       - Cursor spawns mid-right of active half; movement is HORIZONTAL ONLY.
-      - Touch START -> it disappears; stimulus appears middle-far-right. Stimulus has square corners.
+      - Touch START -> it disappears; stimulus appears middle-far-right (square corners).
       - Stimulus visible up to 5s. If collided:
-          * If S+: play correct, pellet, wait 1000ms, pellet, play correct, 2s ITI.
+          * If S+: play correct, pellet, wait 1500ms, pellet, play correct, 2s ITI.
           * Else (S-, NP, NN, INT): no sound, no pellets, 2s ITI.
         If timeout on S+: play incorrect, 2s ITI (no pellets).
       - Returns dict or None on abort.
@@ -129,7 +163,7 @@ def run(screen, clock, state, player, stimulus_label=None):
 
     # which half is ACTIVE for this call?
     active_half = left_rect if ((player == "leader" and leader_is_left) or (player == "follower" and not leader_is_left)) else right_rect
-    inactive_half = right_rect if active_half == left_rect else left_rect
+    side_key = "left" if active_half == left_rect else "right"
 
     # joysticks
     js_left  = pygame.joystick.Joystick(0) if pygame.joystick.get_count() > 0 else None
@@ -157,16 +191,17 @@ def run(screen, clock, state, player, stimulus_label=None):
     stim_rect = pygame.Rect(0, 0, stim_w, stim_h)
     stim_rect.center = (active_half.x + int(active_half.width * 0.80), active_half.centery)
 
-
     # profile color
     profile_name = state["config"].get("stimuli", "Dark S+")
     profile = PROFILES.get(profile_name, PROFILES["Dark S+"])
-    stim_label = (stimulus_label or "S+").upper()
+
+    # choose label: ALWAYS use per-side deck
+    stim_label = _next_label_for_side(state, side_key)
+
     stim_color = profile.get(stim_label, profile["S+"])
 
-    # which dispenser corresponds to this player?
-    player_is_left = (active_half == left_rect)
-    dispense_side = 0 if player_is_left else 1
+    # which dispenser corresponds to this active side?
+    dispense_side = 0 if side_key == "left" else 1
 
     sounds = _load_sounds()
 
@@ -174,32 +209,25 @@ def run(screen, clock, state, player, stimulus_label=None):
     def draw_base_only_active():
         """Other half stays white; only ACTIVE half is blue; show divider + borders."""
         screen.fill(WHITE)
-        # paint the active half with blue background
         pygame.draw.rect(screen, BLUE_BG, active_half)
-        # divider & borders
         pygame.draw.rect(screen, BLACK, mid_rect)
         pygame.draw.rect(screen, BLACK, left_rect, 2)
         pygame.draw.rect(screen, BLACK, right_rect, 2)
 
     def draw_start_phase():
         draw_base_only_active()
-        # START bar: no text, square corners
-        pygame.draw.rect(screen, START_FILL, start_rect)                   # fill
-        pygame.draw.rect(screen, BLACK, start_rect, start_border_w)       # thick black border
-        # cursor
+        pygame.draw.rect(screen, START_FILL, start_rect)             # fill
+        pygame.draw.rect(screen, BLACK, start_rect, start_border_w)  # thick black border
         pygame.draw.circle(screen, CURSOR_COLOR, cursor_pos, R)
         pygame.display.flip()
 
     def draw_stim_phase():
         draw_base_only_active()
-        # STIM rectangle (square corners)
         pygame.draw.rect(screen, stim_color, stim_rect)
         pygame.draw.circle(screen, CURSOR_COLOR, cursor_pos, R)
         pygame.display.flip()
 
     def clear_active_half():
-        """Hide everything on the active half (so both start/stim disappear)."""
-        # redraw base but do NOT draw start/stim/cursor
         draw_base_only_active()
         pygame.display.flip()
 
@@ -221,14 +249,16 @@ def run(screen, clock, state, player, stimulus_label=None):
 
         clock.tick(60)
 
-    # after start: hide start and go to stim
+    # after start: go to stim
     stim_onset = time.perf_counter()
 
     # ----------------- Phase 2: Stimulus (max 5s) -----------------
     selected = False
-    correct = False
-    rt = 0.0
     max_stim_sec = 5.0
+
+    # fields for CSV logging
+    collided = False
+    rt_ms = 0
     while not selected:
         for ev in pygame.event.get():
             if ev.type == QUIT: return None
@@ -243,57 +273,48 @@ def run(screen, clock, state, player, stimulus_label=None):
         # selection
         if stim_rect.collidepoint(cursor_pos):
             selected = True
-            rt = time.perf_counter() - stim_onset
+            collided = True
+            rt_ms = int((time.perf_counter() - stim_onset) * 1000)
 
-            # Immediately hide BOTH stimulus and cursor (and the start bar is already gone)
+            # Immediately hide BOTH stimulus and cursor
             clear_active_half()
 
             if _is_correct(stim_label):
-                # Mirror Sakumi flow:
                 # 1) play correct
                 if "correct" in sounds: sounds["correct"].play()
-                # 2) first pellet (no extra sound here)
+                # 2) first pellet
                 if _hw_pellet is not None:
                     try: _hw_pellet(side=dispense_side, num=1)
                     except Exception: pass
-                # 3) wait ~1000ms (Sakumi does pygame.time.delay(1000))
-                pygame.time.delay(1000)
+                # 3) wait ~1500ms
+                pygame.time.delay(1500)
                 # 4) second pellet
                 if _hw_pellet is not None:
                     try: _hw_pellet(side=dispense_side, num=1)
                     except Exception: pass
                 # 5) play correct again
                 if "correct" in sounds: sounds["correct"].play()
-                correct = True
-            else:
-                # non S+: no reward/sound (selection is simply “wrong” here)
-                correct = False
-
             break
+
 
         # timeout while showing stim (only matters for S+)
         if (time.perf_counter() - stim_onset) >= max_stim_sec:
-            # hide stim/cursor
             clear_active_half()
+            collided = False
+            rt_ms = int(max_stim_sec * 1000)
             if _is_correct(stim_label):
-                # S+ timeout is incorrect
                 if "incorrect" in sounds: sounds["incorrect"].play()
-                correct = False
-            else:
-                # For non S+, timing out is just no reward (and no sound)
-                correct = False
             selected = True
-            rt = max_stim_sec
             break
 
         clock.tick(60)
 
-    # 2s ITI before returning control
+    # 2s ITI before returning control (keeps 2s gap toward the next trio)
     pygame.time.delay(2000)
 
     return {
-        "player": player,
-        "stimulus": stim_label,
-        "correct": bool(correct),
-        "rt": round(rt, 3),
+    "player": player,
+    "stimulus": stim_label,
+    "collided": collided,  # bool
+    "rt_ms": rt_ms,        # int milliseconds to stimulus (not start button)
     }

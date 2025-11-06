@@ -561,6 +561,19 @@ class LaunchScene:
                 os.remove(old)
             except FileNotFoundError:
                 pass
+    
+    def _first_open_dropdown(self):
+        """Return a reference to the first open dropdown in current mode, else None."""
+        if self.mode == "launch":
+            for dd in (self.sessions_dd, self.monkeyL_dd, self.monkeyR_dd, self.stim_dd):
+                if dd.open:
+                    return dd
+        elif self.mode == "resume_menu":
+            for dd in (self.edit_monkeyL, self.edit_monkeyR, self.edit_stim):
+                if dd.open:
+                    return dd
+        return None
+
 
 
     # --------------- public API ---------------
@@ -578,6 +591,29 @@ class LaunchScene:
                     return None
                 if event.type == KEYDOWN and (event.key == K_ESCAPE or event.key == K_q):
                     return None
+                
+                # --- If any dropdown is open, route this event ONLY to that dropdown and skip others
+                open_dd = self._first_open_dropdown()
+                if open_dd is not None:
+                    selected = open_dd.handle(event)
+
+                    # If a selection was actually made, enforce "Left ≠ Right" for monkey pickers
+                    if selected is not None:
+                        if self.mode == "launch":
+                            if open_dd is self.monkeyL_dd and self.monkeyR_dd.value == self.monkeyL_dd.value:
+                                self.monkeyR_dd.value = None
+                            elif open_dd is self.monkeyR_dd and self.monkeyL_dd.value == self.monkeyR_dd.value:
+                                self.monkeyL_dd.value = None
+                        elif self.mode == "resume_menu":
+                            if open_dd is self.edit_monkeyL and self.edit_monkeyR.value == self.edit_monkeyL.value:
+                                self.edit_monkeyR.value = None
+                            elif open_dd is self.edit_monkeyR and self.edit_monkeyL.value == self.edit_monkeyR.value:
+                                self.edit_monkeyL.value = None
+
+                    # Consume this frame's event so controls underneath don't react to the same click/scroll
+                    continue
+
+
 
                 if self.mode == "launch":
                     self.date_input.handle(event)
@@ -706,10 +742,19 @@ class LaunchScene:
                         dd.draw(self.screen, force_front=True)
 
                 if self.error_lines:
-                    y_err = self.title_rect.bottom + self.s(70)
-                    for line in self.error_lines:
-                        self._draw_text(self.screen, f"• {line}", self.FONT_SMALL, self.ERROR, self.panel_x, y_err)
-                        y_err += self.s(24)
+                    # Optional: subtle translucent backdrop for readability
+                    band_h = self.s(28) * len(self.error_lines) + self.s(16)
+                    band = pygame.Surface((self.W, band_h), pygame.SRCALPHA)
+                    band.fill((0, 0, 0, 60))
+                    self.screen.blit(band, (0, self.H - band_h))
+
+                    # Draw lines from bottom up, centered
+                    y = self.H - self.s(12)  # bottom margin
+                    for line in reversed(self.error_lines):
+                        t = f"• {line}"
+                        # midbottom anchored, centered horizontally
+                        self._draw_text(self.screen, t, self.FONT_SMALL, self.ERROR, self.W // 2, y, anchor="midbottom")
+                        y -= self.s(28)
 
             elif self.mode == "resume_menu":
                 list_rect, detail_rect = self._layout_resume_panels()
@@ -759,10 +804,17 @@ class LaunchScene:
                         dd.draw(self.screen, force_front=True)
 
                 if self.error_lines:
-                    y_err = detail_rect.bottom - self.s(90)
-                    for line in self.error_lines:
-                        self._draw_text(self.screen, f"• {line}", self.FONT_SMALL, self.ERROR, detail_rect.x + self.s(12), y_err)
-                        y_err += self.s(24)
+                    band_h = self.s(28) * len(self.error_lines) + self.s(16)
+                    band = pygame.Surface((detail_rect.w, band_h), pygame.SRCALPHA)
+                    band.fill((0, 0, 0, 60))
+                    self.screen.blit(band, (detail_rect.x, detail_rect.bottom - band_h))
+
+                    y = detail_rect.bottom - self.s(12)
+                    for line in reversed(self.error_lines):
+                        t = f"• {line}"
+                        # center within the right panel
+                        self._draw_text(self.screen, t, self.FONT_SMALL, self.ERROR, detail_rect.centerx, y, anchor="midbottom")
+                        y -= self.s(28)
 
             pygame.display.flip()
             self.clock.tick(60)
