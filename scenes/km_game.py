@@ -90,39 +90,55 @@ def _draw_centered_text(surface, text, font, color, center):
 # ---- K/M stimulus drawing (new designs) ----
 def _draw_K_box(surface, rect):
     """
-    K = Orange square with a PURPLE star in the middle.
+    K = Dark PURPLE square with a BRIGHT ORANGE star in the middle.
+    Includes a thin outline on the star for luminance contrast.
     """
-    ORANGE = (240, 120, 30)
-    PURPLE = (128, 0, 160)
-    pygame.draw.rect(surface, ORANGE, rect, border_radius=10)
+    PURPLE_SQUARE   = (72, 0, 110)     # dark purple
+    ORANGE_STAR     = (255, 160, 0)    # bright orange
+    STAR_OUTLINE    = (0, 0, 0)        # thin black outline
+
+    pygame.draw.rect(surface, PURPLE_SQUARE, rect, border_radius=10)
 
     cx, cy = rect.center
     r_outer = min(rect.width, rect.height) * 0.32
     r_inner = r_outer * 0.45
 
-    points = []
-    # 10 points for a 5-point star (outer/inner alternating), start pointing up
-    for i in range(10):
-        ang_deg = -90 + i * 36
-        ang = math.radians(ang_deg)
-        r = r_outer if i % 2 == 0 else r_inner
-        x = int(cx + r * math.cos(ang))
-        y = int(cy + r * math.sin(ang))
-        points.append((x, y))
+    # build 5-point star (10 points alternating outer/inner), pointing up
+    def star_points(scale=1.0):
+        pts = []
+        for i in range(10):
+            ang_deg = -90 + i * 36
+            ang = math.radians(ang_deg)
+            r = (r_outer if i % 2 == 0 else r_inner) * scale
+            x = int(cx + r * math.cos(ang))
+            y = int(cy + r * math.sin(ang))
+            pts.append((x, y))
+        return pts
 
-    pygame.draw.polygon(surface, PURPLE, points)
+    # outline first (slightly larger), then fill
+    pygame.draw.polygon(surface, STAR_OUTLINE, star_points(scale=1.06))
+    pygame.draw.polygon(surface, ORANGE_STAR, star_points(scale=1.0))
+
 
 
 def _draw_M_box(surface, rect):
     """
-    M = Green square with a YELLOW circle in the middle.
+    M = Dark TEAL square with a LIGHT YELLOW circle in the middle.
+    Includes a thin outline on the circle for luminance contrast.
     """
-    GREEN  = (20, 160, 60)
-    YELLOW = (245, 215, 60)
-    pygame.draw.rect(surface, GREEN, rect, border_radius=10)
+    TEAL_SQUARE      = (0, 100, 110)   # dark teal
+    YELLOW_CIRCLE    = (255, 245, 170) # light yellow
+    CIRCLE_OUTLINE   = (0, 0, 0)       # thin black outline
+
+    pygame.draw.rect(surface, TEAL_SQUARE, rect, border_radius=10)
+
     cx, cy = rect.center
     r = int(min(rect.width, rect.height) * 0.28)
-    pygame.draw.circle(surface, YELLOW, (cx, cy), r)
+
+    # outline ring (slightly larger), then fill
+    pygame.draw.circle(surface, CIRCLE_OUTLINE, (cx, cy), r + 3)
+    pygame.draw.circle(surface, YELLOW_CIRCLE, (cx, cy), r)
+
 
 # ---- START bar draw (JBT style) ----
 def _draw_start_bar(surface, rect, border_px):
