@@ -30,21 +30,26 @@ def save_state(state):
 
 def load_all_states():
     INCOMPLETE.clear()
-    if not os.path.isdir(STATE_DIR):
-        return INCOMPLETE
-    for name in os.listdir(STATE_DIR):
-        if not name.endswith(".json"):
+    for fn in os.listdir(STATE_DIR):
+        if not fn.endswith(".json"): 
             continue
-        p = os.path.join(STATE_DIR, name)
+        path = os.path.join(STATE_DIR, fn)
         try:
-            with open(p, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if data.get("status") != "complete":
-                INCOMPLETE[data["uid"]] = data
+            with open(path, "r", encoding="utf-8") as f:
+                st = json.load(f)
         except Exception:
-            # skip corrupted/unreadable file
-            pass
-    return INCOMPLETE
+            continue
+
+        # ---- backfill for older files (this is the important bit) ----
+        cfg = st.setdefault("config", {})
+        if "left_name" not in cfg:
+            cfg["left_name"] = cfg.get("leader", "")
+        if "right_name" not in cfg:
+            cfg["right_name"] = cfg.get("follower", "")
+
+        uid = st.get("uid") or fn[:-5]
+        INCOMPLETE[uid] = st
+
 
 
 def new_or_resume_state(uid, config):
@@ -52,28 +57,42 @@ def new_or_resume_state(uid, config):
     p = state_path(uid)
     if os.path.exists(p):
         with open(p, "r", encoding="utf-8") as f:
-            return json.load(f), True
+            st = json.load(f)
+        # ---- backfill for older files (see section B below) ----
+        cfg = st.setdefault("config", {})
+        if "left_name" not in cfg:
+            cfg["left_name"] = cfg.get("leader", "")
+        if "right_name" not in cfg:
+            cfg["right_name"] = cfg.get("follower", "")
+        return st, True
+
+    # ---- NEW STATE (preserve left/right names from Launch) ----
     state = {
         "version": 1,
         "uid": uid,
         "status": "incomplete",
         "config": {
-            "leader": config["leader"],
-            "follower": config["follower"],
-            "stimuli": config["stimuli"],
-            "sessions_total": int(config["sessions_total"]),
+            "leader":          config["leader"],
+            "follower":        config["follower"],
+            "stimuli":         config["stimuli"],
+            "sessions_total":  int(config["sessions_total"]),
+            # PRESERVE these two lines (this is the fix):
+            "left_name":       config.get("left_name", config["leader"]),
+            "right_name":      config.get("right_name", config["follower"]),
         },
         "progress": {
-            "session_index": 1,
-            "block_index": 1,
-            "trio_index": 1,
-            "stage": "KM",
+            "session_index":   1,
+            "block_index":     1,
+            "trio_index":      1,
             "completed_trios": 0,
-            "last_saved_iso": datetime.now().isoformat(timespec="seconds"),
+            "stage":           "KM",
         },
+        "created_at": datetime.now().isoformat(timespec="seconds"),
     }
-    save_state(state)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
     return state, False
+
 
 
 def set_next_trial(state, session_index, next_trial):  # 1..28

@@ -515,13 +515,19 @@ class LaunchScene:
         return list_rect, detail_rect
 
     def _populate_editor_from_state(self, st):
-        self.edit_monkeyL.value = st["config"]["leader"]
-        self.edit_monkeyR.value = st["config"]["follower"]
+        self.edit_monkeyL.value = st["config"].get("left_name", st["config"]["leader"])
+        self.edit_monkeyR.value = st["config"].get("right_name", st["config"]["follower"])
         self.edit_stim.value    = st["config"]["stimuli"]
-        self.edit_radio.left_is_leader = True  # assumption for editor only
+
+        # Set the radio based on who is currently the leader
+        left_name  = st["config"].get("left_name", st["config"]["leader"])
+        leader     = st["config"]["leader"]
+        self.edit_radio.left_is_leader = (leader == left_name)
+
         self.edit_session.value = int(st["progress"]["session_index"])
         next_trial = st["progress"]["completed_trios"] + 1
         self.edit_trial.value = max(1, min(28, next_trial))
+
 
     def _apply_editor_to_state(self, st):
         left_name = self.edit_monkeyL.value
