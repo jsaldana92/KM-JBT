@@ -30,24 +30,6 @@ STIM_SCALE   = 0.75        # smaller stimulus
 CURSOR_SPEED_PER_W = 0.005 # cursor speed factor
 JOYSTICK_DEADZONE  = 0.20  # horizontal axis deadzone
 
-# ---------- sounds (cached) ----------
-_SOUNDS = None
-def _load_sounds():
-    global _SOUNDS
-    if _SOUNDS is not None:
-        return _SOUNDS
-    pygame.mixer.init()
-    base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
-    start_chime    = pygame.mixer.Sound(os.path.join(base, "start_chime.wav"))  # not used in JBT
-    correct_snd    = pygame.mixer.Sound(os.path.join(base, "correct.wav"))
-    incorrect_snd  = pygame.mixer.Sound(os.path.join(base, "incorrect.wav"))
-    _SOUNDS = {
-        "start": start_chime,
-        "correct": correct_snd,
-        "incorrect": incorrect_snd,
-    }
-    return _SOUNDS
-
 # ---------- profiles (easy to extend) ----------
 PROFILES = {
     "Dark S+": {
@@ -67,7 +49,8 @@ PROFILES = {
 }
 
 # ---------- helpers ----------
-def _clamp(v, lo, hi): return max(lo, min(hi, v))
+def _clamp(v, lo, hi):
+    return max(lo, min(hi, v))
 
 def _half_rects(screen_w, screen_h, mid_thickness=12):
     mid_x = screen_w // 2
@@ -78,8 +61,10 @@ def _half_rects(screen_w, screen_h, mid_thickness=12):
 
 def _move_horizontal(keys, joystick, left_key, right_key, speed):
     dx = 0
-    if keys[left_key]:  dx -= 1
-    if keys[right_key]: dx += 1
+    if keys[left_key]:
+        dx -= 1
+    if keys[right_key]:
+        dx += 1
     if joystick and joystick.get_init():
         try:
             ax_x = joystick.get_axis(0)
@@ -92,8 +77,14 @@ def _move_horizontal(keys, joystick, left_key, right_key, speed):
         dx = dx / mag
     return int(dx * speed)
 
-def _is_correct(label):  # Only S+ is “correct”
+def _is_splus(label):
     return (label or "").upper() == "S+"
+
+def _is_sminus(label):
+    return (label or "").upper() == "S-"
+
+def _is_ambiguous(label):
+    return (label or "").upper() in ("NP", "NN", "INT")
 
 # ---- per-SIDE, block-balanced stimulus decks (left/right halves) ----
 _BLOCK_TEMPLATE = ["S+","S+","S-","S-","NP","NN","INT"]
@@ -127,11 +118,12 @@ def _next_label_for_side(state, side_key):
 # =============== JBT Scene ===============
 def run(screen, clock, state, player, stimulus_label=None):
     """
-    Run one NoGo-like JBT for `player` ('leader' | 'follower').
+    Run one JBT trial for `player` ('leader' | 'follower').
 
     Stimulus selection (PER SIDE):
-      - If `stimulus_label` is provided, it is used (testing/override).
-      - Otherwise, the active side pulls from its own 7-trial block: 2 S+, 2 S-, 1 NP, 1 NN, 1 INT (random order).
+      - If `stimulus_label` is provided, it could be used to override (not used here).
+      - Otherwise, the active side pulls from its own 7-trial block:
+        2 S+, 2 S-, 1 NP, 1 NN, 1 INT (random order).
         Sides ('left' and 'right') are tracked independently across the session.
 
     Visuals/flow:
@@ -139,11 +131,25 @@ def run(screen, clock, state, player, stimulus_label=None):
       - START bar: solid BLUE (0,0,255), thick BLACK border, square corners, 150x75@800x600 scaling.
       - Cursor spawns mid-right of active half; movement is HORIZONTAL ONLY.
       - Touch START -> it disappears; stimulus appears middle-far-right (square corners).
-      - Stimulus visible up to 5s. If collided:
-          * If S+: play correct, pellet, wait 1500ms, pellet, play correct, 2s ITI.
-          * Else (S-, NP, NN, INT): no sound, no pellets, 2s ITI.
-        If timeout on S+: play incorrect, 2s ITI (no pellets).
-      - Returns dict or None on abort.
+      - Stimulus visible up to 5s.
+
+    Contingencies (no sounds at all):
+
+      For S+ (Go trials):
+        - Correct Go (S+ selected): 2 pellets, 2 s ITI.
+        - Incorrect Go (S+ ignored / timeout): 0 pellets, 2 s ITI.
+
+      For S– (No-Go trials):
+        - Correct No-Go (S– ignored): subject sits out full 5 s stimulus,
+          then gets 0 pellets, 2 s ITI. Total trial ~ 7 s.
+        - Incorrect No-Go (S– selected): 0 pellets,
+          ITI = max(0, 7 s – time_to_selection),
+          so trial duration + ITI ≈ 7 s total, with a 5 s cap on trial time.
+
+      For Ambiguous (NP, NN, INT):
+        - Selected or ignored: 0 pellets, 2 s ITI.
+
+    Returns a dict or None on abort.
     """
     W, H = screen.get_size()
     scale = H / 600.0  # keeps “classic 800x600” proportions
@@ -158,11 +164,16 @@ def run(screen, clock, state, player, stimulus_label=None):
     left_rect, right_rect, mid_rect = _half_rects(W, H, mid_thickness=12)
 
     # which side is leader (like KM)
-    left_name  = state["config"].get("left_name", state["config"]["leader"])
+    left_name = state["config"].get("left_name", state["config"]["leader"])
     leader_is_left = (state["config"]["leader"] == left_name)
 
     # which half is ACTIVE for this call?
-    active_half = left_rect if ((player == "leader" and leader_is_left) or (player == "follower" and not leader_is_left)) else right_rect
+    active_half = (
+        left_rect
+        if ((player == "leader" and leader_is_left) or
+            (player == "follower" and not leader_is_left))
+        else right_rect
+    )
     side_key = "left" if active_half == left_rect else "right"
 
     # joysticks
@@ -203,9 +214,7 @@ def run(screen, clock, state, player, stimulus_label=None):
     # which dispenser corresponds to this active side?
     dispense_side = 0 if side_key == "left" else 1
 
-    sounds = _load_sounds()
-
-    # -------- draw helpers (match look) --------
+    # -------- draw helpers --------
     def draw_base_only_active():
         """Other half stays white; only ACTIVE half is blue; show divider + borders."""
         screen.fill(WHITE)
@@ -235,12 +244,18 @@ def run(screen, clock, state, player, stimulus_label=None):
     start_touched = False
     while not start_touched:
         for ev in pygame.event.get():
-            if ev.type == QUIT: return None
-            if ev.type == KEYDOWN and ev.key in (K_ESCAPE, K_q): return None
+            if ev.type == QUIT:
+                return None
+            if ev.type == KEYDOWN and ev.key in (K_ESCAPE, K_q):
+                return None
 
         keys = pygame.key.get_pressed()
         dx = _move_horizontal(keys, js, key_left, key_right, speed)
-        cursor_pos[0] = _clamp(cursor_pos[0] + dx, active_half.left + R, active_half.right - R - 1)
+        cursor_pos[0] = _clamp(
+            cursor_pos[0] + dx,
+            active_half.left + R,
+            active_half.right - R - 1
+        )
 
         draw_start_phase()
 
@@ -253,68 +268,109 @@ def run(screen, clock, state, player, stimulus_label=None):
     stim_onset = time.perf_counter()
 
     # ----------------- Phase 2: Stimulus (max 5s) -----------------
-    selected = False
     max_stim_sec = 5.0
 
     # fields for CSV logging
-    collided = False
-    rt_ms = 0
+    selected = False
+    collided = False           # did they ever touch the stimulus?
+    rt_ms = 0                  # ms from stimulus onset to touch (or 5000 if no touch)
+    trial_dur_sec = max_stim_sec  # total “trial time” we’ll use for S- ITI logic
+
     while not selected:
         for ev in pygame.event.get():
-            if ev.type == QUIT: return None
-            if ev.type == KEYDOWN and ev.key in (K_ESCAPE, K_q): return None
+            if ev.type == QUIT:
+                return None
+            if ev.type == KEYDOWN and ev.key in (K_ESCAPE, K_q):
+                return None
 
         keys = pygame.key.get_pressed()
         dx = _move_horizontal(keys, js, key_left, key_right, speed)
-        cursor_pos[0] = _clamp(cursor_pos[0] + dx, active_half.left + R, active_half.right - R - 1)
+        cursor_pos[0] = _clamp(
+            cursor_pos[0] + dx,
+            active_half.left + R,
+            active_half.right - R - 1
+        )
 
         draw_stim_phase()
+
+        now = time.perf_counter()
+        elapsed = now - stim_onset
 
         # selection
         if stim_rect.collidepoint(cursor_pos):
             selected = True
             collided = True
-            rt_ms = int((time.perf_counter() - stim_onset) * 1000)
+            rt_ms = int(elapsed * 1000)
+            trial_dur_sec = min(max_stim_sec, elapsed)
 
             # Immediately hide BOTH stimulus and cursor
             clear_active_half()
-
-            if _is_correct(stim_label):
-                # 1) play correct
-                if "correct" in sounds: sounds["correct"].play()
-                # 2) first pellet
-                if _hw_pellet is not None:
-                    try: _hw_pellet(side=dispense_side, num=1)
-                    except Exception: pass
-                # 3) wait ~1500ms
-                pygame.time.delay(1500)
-                # 4) second pellet
-                if _hw_pellet is not None:
-                    try: _hw_pellet(side=dispense_side, num=1)
-                    except Exception: pass
-                # 5) play correct again
-                if "correct" in sounds: sounds["correct"].play()
             break
 
-
-        # timeout while showing stim (only matters for S+)
-        if (time.perf_counter() - stim_onset) >= max_stim_sec:
-            clear_active_half()
+        # timeout (no selection within 5s)
+        if elapsed >= max_stim_sec:
+            selected = True
             collided = False
             rt_ms = int(max_stim_sec * 1000)
-            if _is_correct(stim_label):
-                if "incorrect" in sounds: sounds["incorrect"].play()
-            selected = True
+            trial_dur_sec = max_stim_sec
+
+            clear_active_half()
             break
 
         clock.tick(60)
 
-    # 2s ITI before returning control (keeps 2s gap toward the next trio)
-    pygame.time.delay(2000)
+    # ----------------- Outcome logic: pellets + ITI -----------------
+    label_up = (stim_label or "").upper()
+    is_splus  = _is_splus(label_up)
+    is_sminus = _is_sminus(label_up)
+    is_ambig  = _is_ambiguous(label_up)
+
+    # Defaults: 2 s ITI, no pellets
+    pellets = 0
+    iti_sec = 2.0
+
+    if is_splus:
+        if collided:
+            # Correct Go (S+ selected): reward +, 2 s ITI
+            pellets = 2
+            iti_sec = 2.0
+        else:
+            # Incorrect Go (S+ ignored): 2 s ITI, no reward
+            pellets = 0
+            iti_sec = 2.0
+
+    elif is_sminus:
+        if collided:
+            # Incorrect No-Go (S– selected):
+            # ITI = 7 s – time to complete trial (from stim onset to touch),
+            # clamped at 0 so total trial time ≈ 7 s.
+            pellets = 0
+            iti_sec = max(0.0, 7.0 - trial_dur_sec)
+        else:
+            # Correct No-Go (S– ignored):
+            # They sit out the full 5 s stim, then get a 2 s ITI (total 7 s).
+            pellets = 0
+            iti_sec = 2.0
+
+    else:
+        # Ambiguous (NP / NN / INT):
+        # Ambiguous selected/ignored: no buzzer, no reward, 2 s ITI
+        pellets = 0
+        iti_sec = 2.0
+
+    # Dispense pellets, if any (no sounds)
+    if pellets > 0 and _hw_pellet is not None:
+        try:
+            _hw_pellet(side=dispense_side, num=pellets)
+        except Exception:
+            pass
+
+    # ITI
+    pygame.time.delay(int(iti_sec * 1000))
 
     return {
-    "player": player,
-    "stimulus": stim_label,
-    "collided": collided,  # bool
-    "rt_ms": rt_ms,        # int milliseconds to stimulus (not start button)
+        "player": player,
+        "stimulus": stim_label,
+        "collided": collided,   # bool
+        "rt_ms": rt_ms,         # int milliseconds to stimulus (not start button)
     }
