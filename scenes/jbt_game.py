@@ -331,11 +331,16 @@ def run(screen, clock, state, player, stimulus_label=None):
 
     if is_splus:
         if collided:
-            # Correct Go (S+ selected): reward +, 2 s ITI
-            pellets = 2
+            # Correct Go (S+ selected): 80% VRR
+            # 80% chance -> 2 pellets
+            # 20% chance -> 0 pellets
+            if random.random() < 0.8:
+                pellets = 2
+            else:
+                pellets = 0
             iti_sec = 2.0
         else:
-            # Incorrect Go (S+ ignored): 2 s ITI, no reward
+            # Incorrect Go (S+ ignored): no pellets, 2 s ITI
             pellets = 0
             iti_sec = 2.0
 
