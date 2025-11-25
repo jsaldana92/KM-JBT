@@ -554,9 +554,8 @@ def run(screen, clock, state):
     draw_both_choices()
     pygame.time.delay(2000)
 
-    # Short ITI if you want to retain one (you asked to keep “all other parts essential the same”);
-    # we’ll keep a light 2s ITI as before for pacing before JBT.
-    pygame.time.delay(2000)
+    # Short ITI after the choices are presented (uncomment if needed again);
+    # pygame.time.delay(2000)
 
     paired = f"{leader_choice}{follower_choice}"
 
