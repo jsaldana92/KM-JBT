@@ -18,6 +18,93 @@ from shared.persistence import (
     ensure_fake_incomplete_examples,
 )
 
+# --- DEV PATCH ---
+DEV_KEYBOARD_AS_JOYSTICK = True
+# -----------------
+# ---------- pellet test (launcher sanity check) ----------
+_pelletPath = ['c:/pellet1.exe', 'c:/pellet2.exe']  # 0 = left, 1 = right
+
+def _dispense_pellet(side: int, num: int = 1):
+    """
+    Launcher-only pellet test.
+    HARD GUARANTEE: exactly one pellet per call (collision latching handles frequency).
+    """
+    exe = _pelletPath[side]
+    if os.path.isfile(exe):
+        os.system(exe)
+    else:
+        print(f"[PELLET] Missing {exe} — would dispense for side={side}")
+    pygame.time.delay(150)
+
+
+def _joy_vec(joy_index: int, deadzone: float = 0.20):
+    """
+    Returns (dx, dy) in [-1..1] based on joystick axes.
+    Falls back to DEV keyboard mapping if enabled:
+      - joy 0 => WASD
+      - joy 1 => Arrow keys
+    """
+    dx = dy = 0.0
+
+    # HW joystick
+    if pygame.joystick.get_count() > joy_index:
+        try:
+            j = pygame.joystick.Joystick(joy_index)
+            if not j.get_init():
+                j.init()
+            dx = float(j.get_axis(0))
+            dy = float(j.get_axis(1))
+        except Exception:
+            dx = dy = 0.0
+
+        if abs(dx) < deadzone: dx = 0.0
+        if abs(dy) < deadzone: dy = 0.0
+        return dx, dy
+
+    # DEV keyboard fallback
+    if DEV_KEYBOARD_AS_JOYSTICK:
+        keys = pygame.key.get_pressed()
+        if joy_index == 0:
+            if keys[K_a]: dx -= 1.0
+            if keys[K_d]: dx += 1.0
+            if keys[K_w]: dy -= 1.0
+            if keys[K_s]: dy += 1.0
+        elif joy_index == 1:
+            if keys[K_LEFT]:  dx -= 1.0
+            if keys[K_RIGHT]: dx += 1.0
+            if keys[K_UP]:    dy -= 1.0
+            if keys[K_DOWN]:  dy += 1.0
+
+        # normalize so diagonals aren't faster
+        mag = (dx*dx + dy*dy) ** 0.5
+        if mag > 1e-6:
+            dx /= mag
+            dy /= mag
+
+    return dx, dy
+
+
+def _virtual_joystick_active(index: int) -> bool:
+    """
+    DEV ONLY.
+    index 0 -> WASD
+    index 1 -> Arrow keys
+    Returns True if any of those keys are currently pressed.
+    """
+    if not DEV_KEYBOARD_AS_JOYSTICK:
+        return False
+
+    keys = pygame.key.get_pressed()
+
+    if index == 0:
+        return keys[K_w] or keys[K_a] or keys[K_s] or keys[K_d]
+    if index == 1:
+        return keys[K_UP] or keys[K_DOWN] or keys[K_LEFT] or keys[K_RIGHT]
+
+    return False
+
+
+
 # =====================================================
 # UI helpers (same behavior as before, packaged here)
 # =====================================================
@@ -396,12 +483,37 @@ class LaunchScene:
         )
         y += row_h + self.GROUP_SPACING
 
+        # -------------------------------------------------
+        # Joystick side check (layout-only, no behavior change)
+        # Two white squares: left shows joystick that maps to LEFT side,
+        # right shows joystick that maps to RIGHT side.
+        # In-game convention: joystick index 0 -> left, 1 -> right.
+        # -------------------------------------------------
+        joy_box = s(140)  # square size
+        self.joy_left_rect  = pygame.Rect(left_col_x,  y, joy_box, joy_box)
+        self.joy_right_rect = pygame.Rect(right_col_x, y, joy_box, joy_box)
+        y += joy_box + self.GROUP_SPACING
+
+        # Joystick test cursors + pellet test cooldown/latch
+        self._joy_cursor = {
+            0: [float(self.joy_left_rect.centerx),  float(self.joy_left_rect.centery)],   # joystick0 cursor (left box)
+            1: [float(self.joy_right_rect.centerx), float(self.joy_right_rect.centery)],  # joystick1 cursor (right box)
+        }
+        self._pellet_cooldown_ms = 700
+        self._pellet_last_ms = {0: -10_000, 1: -10_000}  # per dispenser side
+
+        # latch per *side* so “one pellet per collision” is stable regardless of leader mapping
+        self._km_latched = {0: False, 1: False}
+        self._jbt_latched = {0: False, 1: False}
+
+
         self.stim_dd = _Dropdown(
             (left_col_x, y, col_w, row_h),
             self.STIMULI, "Stimuli (Dark S+ / Light S+)", 2,
             s, self.FONT, self.FG, self.LINE, self.BTN_BG, self.BTN_BORDER,
         )
         y += row_h + int(self.GROUP_SPACING * 1.5)
+
 
         self.reset_btn  = _Button((left_col_x, y, s(210), s(54)), "Reset", s, self.FONT, self.FG, self.BTN_BG, self.BTN_BG_HOVER, self.BTN_BORDER)
         self.launch_btn = _Button((right_col_x + col_w - s(180), y, s(180), s(54)), "Launch", s, self.FONT, self.FG, self.BTN_BG, self.BTN_BG_HOVER, self.BTN_BORDER)
@@ -444,6 +556,12 @@ class LaunchScene:
         if self.radio.left_is_leader is None:
             return None, None
         return ("Leader", "Follower") if self.radio.left_is_leader else ("Follower", "Leader")
+    
+    def _reset_cursor_to_center(self, side_index: int):
+        """side_index 0=left box cursor, 1=right box cursor"""
+        rect = self.joy_left_rect if side_index == 0 else self.joy_right_rect
+        self._joy_cursor[side_index][0] = float(rect.centerx)
+        self._joy_cursor[side_index][1] = float(rect.centery)
 
     def _validate_launch(self):
         ok, messages = True, []
@@ -479,14 +597,27 @@ class LaunchScene:
         top = self.title_rect.bottom + self.s(16)
         height = self.H - top - int(self.PAD * 1.5)
 
-        left_w = max(self.s(480), int(self.panel_w * 0.45))
-        list_rect = pygame.Rect(self.panel_x, top, left_w, height)
+        gap = self.s(10)
 
-        detail_rect = pygame.Rect(
-            list_rect.right + self.s(10), top,
-            self.W - (list_rect.right + self.s(10)) - self.panel_x + self.RIGHT_PANEL_EXTRA_W,
-            height,
-        )
+        # Center the two resume panels as a unit.
+        # RIGHT_PANEL_EXTRA_W previously made the total wider but still anchored at panel_x,
+        # which shifts the pair to the right. Instead, we bake that "extra" into the centered area.
+        side_margin = max(self.PAD, int(self.panel_x - (self.RIGHT_PANEL_EXTRA_W / 2)))
+
+        available_w = self.W - 2 * side_margin
+
+        # Keep similar proportions, but based on the available centered width
+        left_w = max(self.s(480), int(available_w * 0.45))
+        right_w = max(self.s(520), available_w - left_w - gap)  # ensure not tiny
+
+        # If the min right_w forced overflow, rebalance
+        total_w = left_w + gap + right_w
+        if total_w > available_w:
+            right_w = available_w - left_w - gap
+            right_w = max(self.s(420), right_w)  # last-resort floor
+
+        list_rect = pygame.Rect(side_margin, top, left_w, height)
+        detail_rect = pygame.Rect(list_rect.right + gap, top, right_w, height)
 
         # place widgets
         x = detail_rect.x + self.s(20)
@@ -513,6 +644,7 @@ class LaunchScene:
         self.back_btn.rect.update(x + self.s(260), y, self.s(180), self.s(54))
 
         return list_rect, detail_rect
+
 
     def _populate_editor_from_state(self, st):
         self.edit_monkeyL.value = st["config"].get("left_name", st["config"]["leader"])
@@ -731,11 +863,143 @@ class LaunchScene:
                 self.monkeyL_dd.draw(self.screen)
                 self.monkeyR_dd.draw(self.screen)
                 self.radio.draw(self.screen)
+
+                # -------- Joystick mapping squares (layout-only) --------
+                def _draw_joy_box(rect, side_index: int):
+                    """
+                    side_index: 0 for left white box, 1 for right white box
+                    IMPORTANT: this mirrors in-game mapping:
+                      - physical joystick 0 drives LEFT side
+                      - physical joystick 1 drives RIGHT side
+                    """
+                    # outer white square
+                    pygame.draw.rect(self.screen, (255, 255, 255), rect, border_radius=self.s(10))
+                    pygame.draw.rect(self.screen, self.BTN_BORDER, rect, self.s(2), border_radius=self.s(10))
+
+                    # Presence: HW joystick exists OR dev-mode key emulation is enabled
+                    hw_present = (pygame.joystick.get_count() > side_index)
+                    present = hw_present or DEV_KEYBOARD_AS_JOYSTICK
+
+                    if not present:
+                        msg = f"no joystick {side_index} detected"
+                        t = self.FONT_SMALL.render(msg, True, (120, 120, 120))
+                        self.screen.blit(t, t.get_rect(center=rect.center))
+                        return
+
+                    # Cursor color depends on whether leader mapping is selected
+                    leader_selected = (self.radio.left_is_leader is not None)
+                    cursor_color = (220, 0, 0) if leader_selected else (0, 0, 0)
+
+                    # Move cursor based on that side’s joystick/key input
+                    dx, dy = _joy_vec(side_index, deadzone=0.20)
+
+                    # Use a small float speed. This will still move because we are NOT int()-truncating.
+                    spd = 1.5
+
+                    self._joy_cursor[side_index][0] += dx * spd
+                    self._joy_cursor[side_index][1] += dy * spd
+
+                    # Clamp cursor inside the white square
+                    cur_size = max(10, self.s(18))
+                    half = cur_size // 2
+                    self._joy_cursor[side_index][0] = max(rect.left + half, min(rect.right - half - 1, self._joy_cursor[side_index][0]))
+                    self._joy_cursor[side_index][1] = max(rect.top  + half, min(rect.bottom - half - 1, self._joy_cursor[side_index][1]))
+
+                    # integer center for consistent draw/collision
+                    cx = int(self._joy_cursor[side_index][0])
+                    cy = int(self._joy_cursor[side_index][1])
+
+                    cur_rect = pygame.Rect(0, 0, cur_size, cur_size)
+                    cur_rect.center = (cx, cy)
+
+                    # slightly forgiving collision rect so thin strips feel fair
+                    hit_rect = cur_rect.inflate(max(2, self.s(4)), max(2, self.s(4)))
+
+                    pygame.draw.rect(self.screen, cursor_color, cur_rect)
+
+
+                    # If leader not chosen yet, we still show movement but do NOT pellet-test
+                    if not leader_selected:
+                        return
+
+                    # -------------------------------------------------
+                    # Determine which DISPENSER is "same side" vs "opposite side"
+                    # based on leader/follower mapping (mirrors game logic):
+                    #
+                    # KM: player's collision -> dispense from OPPOSITE dispenser
+                    # JBT: player's collision -> dispense from SAME dispenser
+                    #
+                    # side_index indicates the PLAYER SIDE (left box / right box).
+                    # same_dispenser is tied to SIDE, not to leader/follower identity.
+                    # -------------------------------------------------
+                    same_dispenser = side_index
+                    opp_dispenser  = 1 - side_index
+
+                    now_ms = pygame.time.get_ticks()
+
+                    # Thin edge strips with FIXED meanings:
+                    #  - KM strip: ALWAYS LEFT side of the square  [PURPLE] -> opposite dispenser
+                    #  - JBT strip: ALWAYS RIGHT side of the square [GREY]  -> same dispenser
+                    strip_w   = max(6, self.s(10))        # thickness of strip
+                    strip_h   = int(rect.h * 0.65)        # tall strip for easy targeting
+                    strip_top = rect.y + (rect.h - strip_h) // 2
+
+                    # FIXED: purple always left, grey always right
+                    km_rect = pygame.Rect(rect.x,              strip_top, strip_w, strip_h)
+                    jbt_rect = pygame.Rect(rect.right-strip_w, strip_top, strip_w, strip_h)
+
+                    KM_PURPLE = (150, 60, 210)
+                    JBT_GREY  = (170, 170, 170)
+
+                    pygame.draw.rect(self.screen, KM_PURPLE, km_rect)
+                    pygame.draw.rect(self.screen, (0, 0, 0), km_rect, max(1, self.s(2)))
+
+                    pygame.draw.rect(self.screen, JBT_GREY, jbt_rect)
+                    pygame.draw.rect(self.screen, (0, 0, 0), jbt_rect, max(1, self.s(2)))
+
+
+                    # ---------- KM collision (dispense opposite) ----------
+                    km_hit = km_rect.colliderect(hit_rect)
+                    if km_hit and not self._km_latched[side_index]:
+                        if now_ms - self._pellet_last_ms[opp_dispenser] >= self._pellet_cooldown_ms:
+                            _dispense_pellet(opp_dispenser, 1)
+                            self._pellet_last_ms[opp_dispenser] = now_ms
+
+                        self._km_latched[side_index] = True
+                        self._reset_cursor_to_center(side_index)
+
+                    if not km_hit:
+                        self._km_latched[side_index] = False
+
+                    # ---------- JBT collision (dispense same side) ----------
+                    jbt_hit = jbt_rect.colliderect(hit_rect)
+                    if jbt_hit and not self._jbt_latched[side_index]:
+                        if now_ms - self._pellet_last_ms[same_dispenser] >= self._pellet_cooldown_ms:
+                            _dispense_pellet(same_dispenser, 1)
+                            self._pellet_last_ms[same_dispenser] = now_ms
+
+                        self._jbt_latched[side_index] = True
+                        self._reset_cursor_to_center(side_index)
+
+                    if not jbt_hit:
+                        self._jbt_latched[side_index] = False
+
+
+
+
+
+                # Left square = joystick 0 (controls left side)
+                # Right square = joystick 1 (controls right side)
+                _draw_joy_box(self.joy_left_rect, 0)
+                _draw_joy_box(self.joy_right_rect, 1)
+                # -------------------------------------------------------
+
                 self.stim_dd.draw(self.screen)
 
                 self.reset_btn.draw(self.screen)
                 self.resume_btn.draw(self.screen)
                 self.launch_btn.draw(self.screen)
+
 
                 Lrole, Rrole = self._current_roles_launch()
                 if Lrole:
@@ -829,6 +1093,5 @@ class LaunchScene:
 # keep the class; add this simple wrapper so function-style callers work too
 def run(screen, clock):
     scene = LaunchScene(screen, clock)
-    outcome, state = scene.run()
-    # function API historically returned just the state or None
-    return None if outcome == "quit" else state
+    # LaunchScene.run() returns state dict or None
+    return scene.run()

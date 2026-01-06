@@ -15,11 +15,24 @@ for i in range(pygame.joystick.get_count()):
     except Exception:
         pass
 
-# ---------- hardware pellet (optional) ----------
-try:
-    from Matts_Dual_Toolbox import pellet as _hw_pellet  # side: 0 (left), 1 (right)
-except Exception:
-    _hw_pellet = None
+# ---------- hardware pellet (JBT-style) ----------
+pelletPath = ['c:/pellet1.exe', 'c:/pellet2.exe']  # 0 = left, 1 = right
+
+def pellet(side: int, num: int = 1):
+    """
+    Dispense [num] pellets via pellet#.exe (mirrors JBT code).
+    side = 0 for Left; side = 1 for Right.
+    Waits 500ms between pellets.
+    """
+    for _ in range(num):
+        exe = pelletPath[side]
+        if os.path.isfile(exe):
+            os.system(exe)
+        else:
+            # dev-friendly fallback, same spirit as JBT
+            print(f"Pellet for side={side} (missing: {exe})")
+        pygame.time.delay(500)
+
 
 # --- tuning knobs (match jbt_game.py where relevant) ---
 CURSOR_SPEED_PER_W = 0.005   # lower = slower, higher = faster
@@ -425,17 +438,15 @@ def run(screen, clock, state):
             draw_baseline_fn()
             pygame.display.flip()
 
-            # 4) dispense + ding
-            if _hw_pellet is not None:
-                try:
-                    _hw_pellet(side=dispense_side, num=1)
-                except Exception:
-                    pass
+            # 4) dispense + ding (JBT-style pellet call)
+            pellet(side=dispense_side, num=1)
             if "pellet" in sounds:
                 sounds["pellet"].play()
 
-            # 5) remainder of the 1.0s cadence
-            pygame.time.delay(750)
+            # 5) remainder of cadence
+            # pellet() already waits 500ms; we keep a small extra delay so the total stays ~1s per pellet
+            pygame.time.delay(250)
+
 
 
     _blink_and_dispense(

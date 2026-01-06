@@ -14,11 +14,23 @@ for i in range(pygame.joystick.get_count()):
     except Exception:
         pass
 
-# ---------- hardware pellet (optional) ----------
-try:
-    from Matts_Dual_Toolbox import pellet as _hw_pellet  # side: 0 (left), 1 (right)
-except Exception:
-    _hw_pellet = None
+# ---------- hardware pellet (JBT-style exe call) ----------
+pelletPath = ['c:/pellet1.exe', 'c:/pellet2.exe']  # 0 = left, 1 = right
+
+def pellet(side: int, num: int = 1):
+    """
+    Dispense [num] pellets via pellet#.exe (mirrors the working JBT code pattern).
+    side = 0 for Left; side = 1 for Right.
+    Waits 500ms between pellets.
+    """
+    for _ in range(num):
+        exe = pelletPath[side]
+        if os.path.isfile(exe):
+            os.system(exe)
+        else:
+            print(f"[PELLET] Missing {exe} — would dispense for side={side}")
+        pygame.time.delay(500)
+
 
 # --- tuning knobs ---
 START_BASE   = (150, 75)   # legacy size at 800x600
@@ -167,6 +179,11 @@ def run(screen, clock, state, player, stimulus_label=None):
     left_name = state["config"].get("left_name", state["config"]["leader"])
     leader_is_left = (state["config"]["leader"] == left_name)
 
+    # ---- physical dispenser indices ----
+    # pelletPath[0] = LEFT dispenser, pelletPath[1] = RIGHT dispenser
+    leader_disp   = 0 if leader_is_left else 1
+    follower_disp = 1 - leader_disp
+
     # which half is ACTIVE for this call?
     active_half = (
         left_rect
@@ -211,8 +228,8 @@ def run(screen, clock, state, player, stimulus_label=None):
 
     stim_color = profile.get(stim_label, profile["S+"])
 
-    # which dispenser corresponds to this active side?
-    dispense_side = 0 if side_key == "left" else 1
+    # which dispenser corresponds to THIS player (leader/follower controls own dispenser)
+    dispense_side = leader_disp if player == "leader" else follower_disp
 
     # -------- draw helpers --------
     def draw_base_only_active():
@@ -364,11 +381,8 @@ def run(screen, clock, state, player, stimulus_label=None):
         iti_sec = 2.0
 
     # Dispense pellets, if any (no sounds)
-    if pellets > 0 and _hw_pellet is not None:
-        try:
-            _hw_pellet(side=dispense_side, num=pellets)
-        except Exception:
-            pass
+    if pellets > 0:
+        pellet(side=dispense_side, num=pellets)
 
     # ITI
     pygame.time.delay(int(iti_sec * 1000))
